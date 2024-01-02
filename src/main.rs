@@ -1,5 +1,5 @@
-use std::net::{TcpListener, TcpStream};
-use std::io::{Read, Write};
+use std::net::{TcpListener};
+use std::io::{BufReader, Read, Write};
 
 fn main() {
     println!("Logs from your program will appear here!");
@@ -9,11 +9,32 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
-                //let mut buffer: [u8] =
-                //let request = _stream.read(&mut buffer);
-                let response = "HTTP/1.1 200 OK\r\n\r\n";
-                _stream.write(response.as_bytes()).unwrap();
-                _stream.flush().unwrap();
+                let mut _reader = BufReader::new(&_stream);
+                let mut buffer = [0; 1024];
+
+                if let Ok(_) = _reader.read(&mut buffer) {
+                    let request = String::from_utf8_lossy(&mut buffer);
+                    let required_lines: Vec<&str> = request.lines().collect();
+
+                    if let Some(first_line) = required_lines.get(0) {
+                        let mut parts = first_line.split_whitespace();
+                        let method = parts.next().unwrap();
+                        let path = parts.next().unwrap();
+                        let version = parts.next().unwrap();
+
+                        println!("{} {} {}", method, path, version);
+
+                        if path == "/" {
+                            let response = "HTTP/1.1 200 OK\r\n\r\n";
+                            _stream.write(response.as_bytes()).unwrap();
+                            _stream.flush().unwrap();
+                        } else {
+                            let response = "HTTP/1.1 404 NOT FOUND\r\n\r\n";
+                            _stream.write(response.as_bytes()).unwrap();
+                            _stream.flush().unwrap();
+                        }
+                    }
+                }
             },
             Err(e) => println!("error: {}", e),
         }
