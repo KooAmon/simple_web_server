@@ -1,16 +1,16 @@
 use chrono::prelude::*;
-//  TODO: Implement request
-use http::{Response};//, Request};
+use http::Response;
 use uuid::Uuid;
 use lazy_static::lazy_static;
 use std::{
     net::{TcpListener, TcpStream},
     io::{Read, Write},
-    sync::Mutex,
-    thread,
+    sync::Mutex
 };
 
 mod argparser;
+mod threads;
+use threads::ThreadPool;
 
 //  Used to contain the response type and content type
 enum ResponseType {
@@ -24,6 +24,8 @@ enum ContentType {
     Html(String),
     Plain(String)
 }
+
+const THREADPOOLSIZE: usize = 10;
 
 lazy_static!{
     //  The server id. This is used to identify the server run instance in the logs
@@ -107,13 +109,14 @@ fn parse_request(sessionid: &Uuid, root: &str, request: &Vec<&str>) -> Response<
     if let Some(first_line) = request.get(0) {
         let mut parts = first_line.split_whitespace();
         let method = parts.next().unwrap();
-        let path = parts.next().unwrap();
-        let version = parts.next().unwrap();
-        let useragent = request.get(5).unwrap();
-        log!("{},{} {} {} {}", &sessionid, method, path, version, useragent);
 
         //  Only GET is supported
         if method != "GET" { return get_5xx_response(&sessionid, 501); }
+
+        let path = parts.next().unwrap();
+        let version = parts.next().unwrap();
+        let useragent = request.get(5).unwrap();
+        log!("{},{} {} {} {}", &sessionid, &method, &path, &version, &useragent);
 
         let response = match path {
             "/user_agent" =>  get_user_agent_response(&sessionid, &useragent),
@@ -143,10 +146,30 @@ fn serialize_response(stream: &mut TcpStream, response: &Response<String>) {
 
 //  Handles the incoming connection
 //  This is spun off into a thread so that multiple connections can be handled at once
-fn handle_incoming_connection(sessionid: &Uuid, root: &String, buffer : &[u8]) -> Response<String> {
-    let request = String::from_utf8_lossy(buffer);
-    let required_lines: Vec<&str> = request.lines().collect();
-    return parse_request(&sessionid, &root,&required_lines);
+fn handle_incoming_connection(root: &String, stream: &mut TcpStream) {
+
+    let sessionid = Uuid::new_v4();
+    log!("{},Connection from {}", &sessionid, &stream.peer_addr().unwrap());
+
+    let mut buffer = [0; 1024];
+
+    let response = match &stream.read(&mut buffer) {
+        Ok(_) => {
+            let request = String::from_utf8_lossy(&buffer);
+            let required_lines: Vec<&str> = request.lines().collect();
+            parse_request(&sessionid, &root,&required_lines)
+        },
+        Err(_) => {
+            log!("{}, An error occurred, terminating connection with {}", &sessionid, &stream.peer_addr().unwrap());
+            Response::builder()
+                .status(500)
+                .body("An error occurred, terminating connection".to_string())
+                .unwrap()
+        },
+    };
+
+    serialize_response(stream, &response);
+    stream.flush().unwrap();
 }
 
 //  Parses the path and returns the full path
@@ -168,7 +191,7 @@ fn read_file(root: &str, sessionid: &Uuid, path: &str) -> Option<String> {
 }
 
 //  Starts the web server and returns the root and listener
-fn start_web_server() -> (String, TcpListener) {
+fn start_web_server() -> (String, TcpListener, ThreadPool) {
     argparser::check_for_help_arg();
     let root = argparser::get_root_arg();
     let ip = argparser::get_ip_from_args();
@@ -177,7 +200,13 @@ fn start_web_server() -> (String, TcpListener) {
     log!(",Started web server on ip:{} port:{} root:{}", &ip, &port, &root);
 
     let socketaddress = format!("{}:{}", &ip, &port);
-    return (root, TcpListener::bind(&socketaddress).unwrap());
+    let threadpool = ThreadPool::new(THREADPOOLSIZE);
+    if threadpool.is_err() {
+        log!(",Error: {:?}", threadpool.err().unwrap());
+        std::process::exit(1);
+    }
+
+    return (root, TcpListener::bind(&socketaddress).unwrap(), threadpool.unwrap());
 }
 
 //  Logs the message to the console
@@ -203,31 +232,15 @@ macro_rules! enclose {
 }
 
 fn main() {
-    let (root, listener) = start_web_server();
+    let (root, listener, threadpool) = start_web_server();
+
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut _stream) => {
                 enclose!((root) {
-                    thread::spawn(move || {
-                        let sessionid = Uuid::new_v4();
-                        log!("{},Connection from {}", &sessionid, _stream.peer_addr().unwrap());
-
-                        let mut buffer = [0; 1024];
-
-                        let response = match _stream.read(&mut buffer) {
-                            Ok(_) => handle_incoming_connection(&sessionid, &root, &buffer),
-                            Err(_) => {
-                                log!("{}, An error occurred, terminating connection with {}", &sessionid, _stream.peer_addr().unwrap());
-                                Response::builder()
-                                    .status(500)
-                                    .body("An error occurred, terminating connection".to_string())
-                                    .unwrap()
-                            },
-                        };
-
-                        serialize_response(&mut _stream, &response);
-                        _stream.flush().unwrap();
+                    threadpool.execute(move || {
+                        handle_incoming_connection(&root, &mut _stream);
                     });
                 });
             },
