@@ -227,7 +227,6 @@ dependencies = [
 name = "simple-http-server"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "chrono",
  "http",
  "lazy_static",

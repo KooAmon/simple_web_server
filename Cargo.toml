@@ -5,12 +5,11 @@ authors = ["stevesternberg"]
 edition = "2021"
 
 [dependencies]
-http = "1.0.0"
-bytes = "1.0.1"
-lazy_static = "1.4.0"
-chrono = "0.4.19"
+http = "1.0.0"          # For HTTP request/response handling
+lazy_static = "1.4.0"   # For ability to set a static variable at runtime
+chrono = "0.4.19"       # For DateTime
 
-[dependencies.uuid]
+[dependencies.uuid]     # For generating UUIDs
 version = "1.6.1"
 features = [
     "v4",                # Lets you generate random UUIDs
