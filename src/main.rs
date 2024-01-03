@@ -4,12 +4,13 @@ use http::{Response};//, Request};
 use uuid::Uuid;
 use lazy_static::lazy_static;
 use std::{
-    env,
     net::{TcpListener, TcpStream},
     io::{Read, Write},
     sync::Mutex,
     thread,
 };
+
+mod argparser;
 
 //  Used to contain the response type and content type
 enum ResponseType {
@@ -24,62 +25,9 @@ enum ContentType {
     Plain(String)
 }
 
-//  The socket address to listen on
-//  TODO: Make this configurable
-const SOCKETADDRESS: &str = "127.0.0.1:4221";
-
-//  The help text to display when --help is given
-static HELP: &'static str = "\
-Simple web server.\n\
---root\t\troot directory to serve files from\n\
---help\t\tdisplay this help and exit";
-
 lazy_static!{
     //  The server id. This is used to identify the server run instance in the logs
     static ref SERVERID: Mutex<Uuid> = Mutex::new(Uuid::new_v4());
-}
-
-//  Checks for the --help argument and displays the help text if found
-fn check_for_help_arg() {
-    if env::args().any(|x| x == "--help") {
-        println!("{}", &HELP);
-        std::process::exit(0);
-    }
-}
-
-//  Checks for the --root argument and returns the value if found
-fn check_for_root_arg() -> String {
-    if env::args().any(|x| x == "--root") {
-        let result = get_parameter_variable_from_args("--root");
-        match result {
-            Some(x) => return x,
-            None => throw_error("Root parameter given but no value"),
-        }
-    }
-
-    throw_error("Root parameter not given");
-
-    //  This is here to satisfy the compiler. It will never be reached
-    //  TODO: Find a better way to do this
-    return "".to_string();
-}
-
-//  Gets the value of a parameter from the command line arguments
-//  splits the arguments into a vector and then finds the index of the parameter
-//  if the parameter is found then the next value is returned
-fn get_parameter_variable_from_args(parameter: &str) -> Option<String> {
-    let args = env::args().collect::<Vec<String>>();
-    let index = args.iter().position(|x| x == parameter);
-    if index.is_none() || index.unwrap() + 1 >= env::args().count() { throw_error(format!("Value for Parameter {} not found", parameter).as_str()); }
-    return args.get(index.unwrap() + 1).cloned();
-}
-
-//  Throws an error and exits the program
-//  Used for invalid arguments
-fn throw_error(e: &str) {
-    println!("Error: {}", e);
-    println!("{}", &HELP);
-    std::process::exit(-1);
 }
 
 //  Gets the echo response for the given request
@@ -221,11 +169,15 @@ fn read_file(root: &str, sessionid: &Uuid, path: &str) -> Option<String> {
 
 //  Starts the web server and returns the root and listener
 fn start_web_server() -> (String, TcpListener) {
-    check_for_help_arg();
-    let root = check_for_root_arg();
-    log!(",Started web server on socket:{} from:{}", &SOCKETADDRESS, &root);
+    argparser::check_for_help_arg();
+    let root = argparser::get_root_arg();
+    let ip = argparser::get_ip_from_args();
+    let port = argparser::get_port_from_args();
 
-    return (root, TcpListener::bind(&SOCKETADDRESS).unwrap());
+    log!(",Started web server on ip:{} port:{} root:{}", &ip, &port, &root);
+
+    let socketaddress = format!("{}:{}", &ip, &port);
+    return (root, TcpListener::bind(&socketaddress).unwrap());
 }
 
 //  Logs the message to the console
