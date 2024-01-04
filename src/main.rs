@@ -25,8 +25,6 @@ enum ContentType {
     Plain(String)
 }
 
-const THREADPOOLSIZE: usize = 10;
-
 lazy_static!{
     //  The server id. This is used to identify the server run instance in the logs
     static ref SERVERID: Mutex<Uuid> = Mutex::new(Uuid::new_v4());
@@ -196,17 +194,35 @@ fn start_web_server() -> (String, TcpListener, ThreadPool) {
     let root = argparser::get_root_arg();
     let ip = argparser::get_ip_from_args();
     let port = argparser::get_port_from_args();
+    let threadpoolsize = argparser::get_threadpoolsize_from_args();
+
+    if root.is_err() { throw_error(root.as_ref().err().unwrap().as_str()); }
+    if ip.is_err() { throw_error(ip.as_ref().err().unwrap().as_str()); }
+    if port.is_err() { throw_error(port.as_ref().err().unwrap().as_str()); }
+    if threadpoolsize.is_err() { throw_error(threadpoolsize.as_ref().err().unwrap().as_str()); }
+
+    let root = root.unwrap();
+    let ip = ip.unwrap();
+    let port = port.unwrap();
+    let threadpoolsize = threadpoolsize.unwrap();
 
     log!(",Started web server on ip:{} port:{} root:{}", &ip, &port, &root);
 
     let socketaddress = format!("{}:{}", &ip, &port);
-    let threadpool = ThreadPool::new(THREADPOOLSIZE);
+    let threadpool = ThreadPool::new(threadpoolsize);
     if threadpool.is_err() {
         log!(",Error: {:?}", threadpool.err().unwrap());
         std::process::exit(1);
     }
 
     return (root, TcpListener::bind(&socketaddress).unwrap(), threadpool.unwrap());
+}
+
+//  Throws an error and exits the program
+//  Used for invalid arguments
+fn throw_error(e: &str) {
+    log!("Error: {}", e);
+    std::process::exit(-1);
 }
 
 //  Logs the message to the console
@@ -236,15 +252,15 @@ fn main() {
 
 
     for stream in listener.incoming() {
-        match stream {
-            Ok(mut _stream) => {
-                enclose!((root) {
-                    threadpool.execute(move || {
-                        handle_incoming_connection(&root, &mut _stream);
-                    });
-                });
-            },
-            Err(e) => log!(",Error: {}", e),
+        if stream.is_err() {
+            log!(",Error: {}", stream.err().unwrap());
+            continue;
         }
+
+        enclose!((root) {
+            threadpool.execute(move || {
+                handle_incoming_connection(&root, &mut stream.unwrap());
+            });
+        });
     }
 }
