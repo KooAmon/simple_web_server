@@ -5,9 +5,7 @@ authors = ["stevesternberg"]
 edition = "2021"
 
 [dependencies]
-http = "1.0.0"          # For HTTP request/response handling
 lazy_static = "1.4.0"   # For ability to set a static variable at runtime
-chrono = "0.4.19"       # For DateTime
 
 [dependencies.uuid]     # For generating UUIDs
 version = "1.6.1"

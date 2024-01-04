@@ -1,168 +1,100 @@
-use chrono::prelude::*;
-use http::Response;
 use uuid::Uuid;
 use lazy_static::lazy_static;
 use std::{
     net::{TcpListener, TcpStream},
-    io::{Read, Write},
+    io::{Write, BufReader, BufRead},
     sync::Mutex
 };
 
 mod argparser;
 mod threads;
+mod http;
+mod logger;
+
+use http::{HttpMethod, HttpRequest, HttpStatusCode, HttpResponse};
 use threads::ThreadPool;
-
-//  Used to contain the response type and content type
-enum ResponseType {
-    Ok(ContentType),
-    ServerError(u16),
-    NotFound,
-}
-
-//  Used to contain the content type and content
-enum ContentType {
-    Html(String),
-    Plain(String)
-}
+use logger::{log, LogLevel};
 
 lazy_static!{
     //  The server id. This is used to identify the server run instance in the logs
     static ref SERVERID: Mutex<Uuid> = Mutex::new(Uuid::new_v4());
 }
 
-//  Gets the echo response for the given request
-fn get_echo_response(sessionid: &Uuid, request: &str) -> Response<String> {
-    log!("{},Sending echo response for {}", &sessionid, request);
-    return make_response(ResponseType::Ok(ContentType::Plain(request.to_string())));
-}
-
 //  Gets the path response for the given request
-fn get_path_response(sessionid: &Uuid, root:&str, request: &str) -> Response<String> {
-    log!("{},Sending path response for {}", &sessionid, request);
+fn get_path_response(sessionid: &Uuid, root:&str, request: &str) -> HttpResponse {
+    log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("Getting path response for {}", request).as_str());
     let filecontents = read_file(&root, &sessionid, &request);
     return match filecontents {
-        Some(content) => make_response(ResponseType::Ok(ContentType::Html(content))),
-        None => get_404_response(&sessionid),
+        Some(content) => create_response(sessionid, HttpStatusCode::Ok, content),
+        None => create_response(&sessionid, HttpStatusCode::NotFound, "".to_string()),
     };
 }
 
-//  Gets the 404 response
-fn get_404_response(sessionid: &Uuid) -> Response<String> {
-    log!("{},Sending 404 response", &sessionid);
-    return make_response(ResponseType::NotFound);
-}
-
-//  Gets the 500 response
-fn get_5xx_response(sessionid: &Uuid, code: u16) -> Response<String> {
-    log!("{},Sending {} response", &sessionid, code);
-    return make_response(ResponseType::ServerError(code));
-}
-
-//  Gets the user agent response for the given request
-fn get_user_agent_response(sessionid: &Uuid, request: &str) -> Response<String> {
-    log!("{},Sending user agent response for {}", &sessionid, request);
-    let user_agent = request.split(":").collect::<Vec<&str>>()[1];
-    return make_response(ResponseType::Ok(ContentType::Html(user_agent.to_string())));
-}
-
 //  Makes a response based on the response type
-fn make_response(responsetype: ResponseType) -> Response<String> {
+fn create_response(sessionid: &Uuid, http_status_code: HttpStatusCode, responsebody: String) -> HttpResponse {
 
-    match responsetype {
-        ResponseType::Ok(contenttype) => {
-            match contenttype {
-                ContentType::Html(content) => {
-                    return Response::builder()
-                        .status(200)
-                        .header("Content-Type", "text/html")
-                        .body(content)
-                        .unwrap();
-                },
-                ContentType::Plain(content) => {
-                    return Response::builder()
-                        .status(200)
-                        .header("Content-Type", "text/plain")
-                        .body(content)
-                        .unwrap();
-                }
-            }
-        },
-        ResponseType::ServerError(code) => {
-            return Response::builder()
-                .status(code)
-                .body("".to_string())
-                .unwrap();
-        },
-        ResponseType::NotFound => {
-            return Response::builder()
-                .status(404)
-                .body("".to_string())
-                .unwrap();
-        }
+    log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("Sending {} response. Body:{}", http_status_code, responsebody).as_str());
+
+    let mut response = HttpResponse::new();
+    response.head.status = http_status_code;
+
+    if !responsebody.is_empty() {
+        response.head.headers.insert("Content-Type".to_string(), "text/html".to_string());
+        response.body = responsebody;
     }
+
+    return response;
 }
 
 //  Parses the request and returns the response
-fn parse_request(sessionid: &Uuid, root: &str, request: &Vec<&str>) -> Response<String> {
-    if let Some(first_line) = request.get(0) {
-        let mut parts = first_line.split_whitespace();
-        let method = parts.next().unwrap();
+fn parse_request(sessionid: &Uuid, root: &str, request: &str) -> HttpResponse {
 
-        //  Only GET is supported
-        if method != "GET" { return get_5xx_response(&sessionid, 501); }
+    let httprequest = request.parse::<HttpRequest>();
 
-        let path = parts.next().unwrap();
-        let version = parts.next().unwrap();
-        let useragent = request.get(5).unwrap();
-        log!("{},{} {} {} {}", &sessionid, &method, &path, &version, &useragent);
+    if httprequest.is_err() { return create_response(&sessionid, HttpStatusCode::NotAcceptable, "".to_string()); }
 
-        let response = match path {
-            "/user_agent" =>  get_user_agent_response(&sessionid, &useragent),
-            _ if path.starts_with("/echo") => get_echo_response(&sessionid, &path[6..]),
-            _ if !path.starts_with("/echo") => get_path_response(&sessionid, &root, &path),
-            _ => get_404_response(&sessionid),
-        };
+    let httprequest = httprequest.unwrap();
 
-        return response;
-    } else {
-        return get_404_response(&sessionid);
+    match httprequest.method {
+        HttpMethod::GET => {
+            log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("{} {} {}", &httprequest.method, &httprequest.path, &httprequest.version).as_str());
+
+            match httprequest.path {
+                _ if httprequest.path.starts_with("/echo") => return create_response(&sessionid, HttpStatusCode::Ok, httprequest.path[6..].to_string()),
+                _ if !httprequest.path.starts_with("/echo") => return get_path_response(&sessionid, &root, &httprequest.path),
+                _ => return create_response(&sessionid, HttpStatusCode::NotFound, "".to_string()),
+            };
+        },
+        _ => return create_response(&sessionid, HttpStatusCode::NotImplemented, "".to_string()),
     }
 }
 
 //  Serializes the response to the stream
-fn serialize_response(stream: &mut TcpStream, response: &Response<String>) {
-    let (parts, body) = response.clone().into_parts();
-    writeln!(stream, "{:?} {} {}", parts.version, parts.status, parts.status.canonical_reason().unwrap()).unwrap();
+fn serialize_response(stream: &mut TcpStream, response: &HttpResponse) {
 
-    for (key, value) in parts.headers.iter() {
-        writeln!(stream, "{}: {}", key, value.to_str().unwrap()).unwrap();
+    writeln!(stream, "{} {} {}", response.head.version, response.head.status, response.head.status.to_string()).unwrap();
+
+    for (key, value) in response.head.headers.iter() {
+        writeln!(stream, "{}: {}", key, value.to_string()).unwrap();
     }
 
     writeln!(stream).unwrap();
-    stream.write_all(&body.as_bytes()).unwrap();
+    stream.write_all(&response.body.as_bytes()).unwrap();
 }
 
 //  Handles the incoming connection
 //  This is spun off into a thread so that multiple connections can be handled at once
-fn handle_incoming_connection(root: &String, stream: &mut TcpStream) {
+fn handle_incoming_connection(sessionid: &Uuid, root: &String, mut stream: &mut TcpStream) {
+    log(LogLevel::Trace, &SERVERID.lock().unwrap(), &sessionid, format!("Connection from {}", &stream.peer_addr().unwrap()).as_str());
 
-    let sessionid = Uuid::new_v4();
-    log!("{},Connection from {}", &sessionid, &stream.peer_addr().unwrap());
-
-    let mut buffer = [0; 1024];
-
-    let response = match &stream.read(&mut buffer) {
-        Ok(_) => {
-            let request = String::from_utf8_lossy(&buffer);
-            let required_lines: Vec<&str> = request.lines().collect();
-            parse_request(&sessionid, &root,&required_lines)
-        },
+    let mut buf_reader = BufReader::new(&mut stream);
+    let buffer = buf_reader.fill_buf().unwrap();
+    let request = String::from_utf8(buffer.to_vec());
+    let response = match request {
+        Ok(_) => parse_request(&sessionid, &root,&request.unwrap()),
         Err(_) => {
-            log!("{}, An error occurred, terminating connection with {}", &sessionid, &stream.peer_addr().unwrap());
-            Response::builder()
-                .status(500)
-                .body("An error occurred, terminating connection".to_string())
-                .unwrap()
+            log(LogLevel::Error, &SERVERID.lock().unwrap(), &sessionid, format!("An error occurred, terminating connection with {}", &stream.peer_addr().unwrap()).as_str());
+            create_response(&sessionid, HttpStatusCode::InternalServerError, "An error occurred with parsing the request, terminating connection".to_string())
         },
     };
 
@@ -183,7 +115,7 @@ fn parse_path(root: &str, path: &str) -> String {
 fn read_file(root: &str, sessionid: &Uuid, path: &str) -> Option<String> {
     let path = parse_path(&root, &path);
 
-    log!("{},Looking for file:{}",&sessionid, &path);
+    log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("Looking for file:{}", &path).as_str());
 
     return std::fs::read_to_string(&path).ok();
 }
@@ -206,12 +138,12 @@ fn start_web_server() -> (String, TcpListener, ThreadPool) {
     let port = port.unwrap();
     let threadpoolsize = threadpoolsize.unwrap();
 
-    log!(",Started web server on ip:{} port:{} root:{}", &ip, &port, &root);
+    log(LogLevel::Info, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Started web server on ip:{} port:{} root:{}", &ip, &port, &root).as_str());
 
     let socketaddress = format!("{}:{}", &ip, &port);
-    let threadpool = ThreadPool::new(threadpoolsize);
+    let threadpool = ThreadPool::new(threadpoolsize, SERVERID.lock().unwrap().clone());
     if threadpool.is_err() {
-        log!(",Error: {:?}", threadpool.err().unwrap());
+        log(LogLevel::Error, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Error: {:?}", threadpool.err().unwrap()).as_str());
         std::process::exit(1);
     }
 
@@ -221,18 +153,8 @@ fn start_web_server() -> (String, TcpListener, ThreadPool) {
 //  Throws an error and exits the program
 //  Used for invalid arguments
 fn throw_error(e: &str) {
-    log!("Error: {}", e);
+    log(LogLevel::Error, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Error: {}", e).as_str());
     std::process::exit(-1);
-}
-
-//  Logs the message to the console
-//  TODO: implement better logging
-#[macro_export]
-macro_rules! log {
-    //  UTC time, server id, session id, message
-    ($($arg:tt)*) => ({
-        println!("{},{},{}", Utc::now(), SERVERID.lock().unwrap(), format!($($arg)*));
-    })
 }
 
 //  Clones the variables and passes them to the closure
@@ -253,14 +175,14 @@ fn main() {
 
     for stream in listener.incoming() {
         if stream.is_err() {
-            log!(",Error: {}", stream.err().unwrap());
+            log(LogLevel::Error, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Error: {}", stream.err().unwrap()).as_str());
             continue;
         }
 
+        let sessionid = Uuid::new_v4();
+
         enclose!((root) {
-            threadpool.execute(move || {
-                handle_incoming_connection(&root, &mut stream.unwrap());
-            });
+            threadpool.execute(move || { handle_incoming_connection(&sessionid, &root, &mut stream.unwrap()); });
         });
     }
 }
