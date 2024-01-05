@@ -5,9 +5,10 @@ authors = ["stevesternberg"]
 edition = "2021"
 
 [dependencies]
-lazy_static = "1.4.0"   # For ability to set a static variable at runtime
+env_logger = "0.10.1"    # For logging
+log = "0.4.20"           # For logging
 
-[dependencies.uuid]     # For generating UUIDs
+[dependencies.uuid]      # For generating UUIDs
 version = "1.6.1"
 features = [
     "v4",                # Lets you generate random UUIDs

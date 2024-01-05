@@ -1,22 +1,27 @@
 use std::{env, fmt::Debug, str::FromStr};
 
+use log::LevelFilter;
+
 //  Parameters
 const ROOTPARAMETER: &str = "--root";
 const IPPARAMETER: &str = "--ip";
 const PORTPARAMETER: &str = "--port";
 const THREADPOOLSIZEPARAMETER: &str = "--threadpoolsize";
+const LOGLEVELPARAMETER: &str = "--loglevel";
 const DEFAULTIP: &str = "127.0.0.1";
 const DEFAULTPORT: u16 = 4221;
 const DEFAULTTHREADPOOLSIZE: usize = 4;
+const DEFAULTLOGLEVEL: &str = "Info";
 
 //  The help text to display when --help is given
 static HELP: &'static str = "\
 Simple web server.\n\
---root\t\t\troot directory to serve files from\n\
---ip\t\t\tip address to listen on\n\
---port\t\t\tport to listen on\n\
---threadpoolsize\tsize of the threadpool\n\
---help\t\t\tdisplay this help and exit";
+--root\t\tRoot directory to serve files from.  Required.\n\
+--ip\t\tIp address to listen on. Defaults to 127.0.0.1.\n\
+--port\t\tPort to listen on. Default to 4221.\n\
+--threadpoolsize\tSize of the threadpool. Default to 4.\n\
+--loglevel\t\tLog level to use. Defaults to Info.\n\
+--help\t\tDisplay this help and exit.";
 
 //  Checks for the --help argument and displays the help text if found
 pub fn check_for_help_arg() {
@@ -55,12 +60,24 @@ pub fn get_port_from_args() -> Result<u16, String> {
     return  Ok(DEFAULTPORT);
 }
 
+//  Gets the --threadpoolsize argument and returns the value if found
+//  If the --threadpoolsize argument is not found then the default threadpoolsize is returned
 pub fn get_threadpoolsize_from_args() -> Result<usize, String> {
     if env::args().any(|x| x == THREADPOOLSIZEPARAMETER) {
         return get_parameter_variable_from_args::<usize>("--threadpoolsize", "Threadpoolsize parameter given but not an usize");
     }
 
     return Ok(DEFAULTTHREADPOOLSIZE);
+}
+
+//  Gets the --loglevel argument and returns the value if found
+//  If the --loglevel argument is not found then the default loglevel is returned
+pub fn get_loglevel_from_args() -> Result<LevelFilter, String> {
+    if env::args().any(|x| x == LOGLEVELPARAMETER) {
+        return get_parameter_variable_from_args::<LevelFilter>("--loglevel", "Loglevel parameter given but not a LevelFilter");
+    }
+
+    return Ok(DEFAULTLOGLEVEL.parse::<LevelFilter>().unwrap());
 }
 
 //  Gets the value of a parameter from the command line arguments

@@ -1,28 +1,19 @@
 use uuid::Uuid;
-use lazy_static::lazy_static;
+use log::*;
 use std::{
     net::{TcpListener, TcpStream},
-    io::{Write, BufReader, BufRead},
-    sync::Mutex
+    io::{Write, BufReader, BufRead}
 };
 
 mod argparser;
 mod threads;
 mod http;
-mod logger;
 
 use http::{HttpMethod, HttpRequest, HttpStatusCode, HttpResponse};
 use threads::ThreadPool;
-use logger::{log, LogLevel};
 
-lazy_static!{
-    //  The server id. This is used to identify the server run instance in the logs
-    static ref SERVERID: Mutex<Uuid> = Mutex::new(Uuid::new_v4());
-}
-
-//  Gets the path response for the given request
 fn get_path_response(sessionid: &Uuid, root:&str, request: &str) -> HttpResponse {
-    log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("Getting path response for {}", request).as_str());
+    info!("{},Getting path response for {}", sessionid, request);
     let filecontents = read_file(&root, &sessionid, &request);
     return match filecontents {
         Some(content) => create_response(sessionid, HttpStatusCode::Ok, content),
@@ -30,10 +21,9 @@ fn get_path_response(sessionid: &Uuid, root:&str, request: &str) -> HttpResponse
     };
 }
 
-//  Makes a response based on the response type
 fn create_response(sessionid: &Uuid, http_status_code: HttpStatusCode, responsebody: String) -> HttpResponse {
 
-    log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("Sending {} response. Body:{}", http_status_code, responsebody).as_str());
+    info!("{},Sending {} response. Body:{}", sessionid, http_status_code, responsebody);
 
     let mut response = HttpResponse::new();
     response.head.status = http_status_code;
@@ -46,7 +36,6 @@ fn create_response(sessionid: &Uuid, http_status_code: HttpStatusCode, responseb
     return response;
 }
 
-//  Parses the request and returns the response
 fn parse_request(sessionid: &Uuid, root: &str, request: &str) -> HttpResponse {
 
     let httprequest = request.parse::<HttpRequest>();
@@ -57,7 +46,7 @@ fn parse_request(sessionid: &Uuid, root: &str, request: &str) -> HttpResponse {
 
     match httprequest.method {
         HttpMethod::GET => {
-            log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("{} {} {}", &httprequest.method, &httprequest.path, &httprequest.version).as_str());
+            info!("{},{} {} {}", sessionid, &httprequest.method, &httprequest.path, &httprequest.version);
 
             match httprequest.path {
                 _ if httprequest.path.starts_with("/echo") => return create_response(&sessionid, HttpStatusCode::Ok, httprequest.path[6..].to_string()),
@@ -69,7 +58,6 @@ fn parse_request(sessionid: &Uuid, root: &str, request: &str) -> HttpResponse {
     }
 }
 
-//  Serializes the response to the stream
 fn serialize_response(stream: &mut TcpStream, response: &HttpResponse) {
 
     writeln!(stream, "{} {} {}", response.head.version, response.head.status, response.head.status.to_string()).unwrap();
@@ -82,10 +70,8 @@ fn serialize_response(stream: &mut TcpStream, response: &HttpResponse) {
     stream.write_all(&response.body.as_bytes()).unwrap();
 }
 
-//  Handles the incoming connection
-//  This is spun off into a thread so that multiple connections can be handled at once
 fn handle_incoming_connection(sessionid: &Uuid, root: &String, mut stream: &mut TcpStream) {
-    log(LogLevel::Trace, &SERVERID.lock().unwrap(), &sessionid, format!("Connection from {}", &stream.peer_addr().unwrap()).as_str());
+    info!("{},Connection from {}", sessionid, &stream.peer_addr().unwrap());
 
     let mut buf_reader = BufReader::new(&mut stream);
     let buffer = buf_reader.fill_buf().unwrap();
@@ -93,7 +79,7 @@ fn handle_incoming_connection(sessionid: &Uuid, root: &String, mut stream: &mut 
     let response = match request {
         Ok(_) => parse_request(&sessionid, &root,&request.unwrap()),
         Err(_) => {
-            log(LogLevel::Error, &SERVERID.lock().unwrap(), &sessionid, format!("An error occurred, terminating connection with {}", &stream.peer_addr().unwrap()).as_str());
+            error!("{},An error occurred, terminating connection with {}", sessionid, &stream.peer_addr().unwrap());
             create_response(&sessionid, HttpStatusCode::InternalServerError, "An error occurred with parsing the request, terminating connection".to_string())
         },
     };
@@ -102,7 +88,6 @@ fn handle_incoming_connection(sessionid: &Uuid, root: &String, mut stream: &mut 
     stream.flush().unwrap();
 }
 
-//  Parses the path and returns the full path
 fn parse_path(root: &str, path: &str) -> String {
     let mut path = format!("{}{}", &root, &path);
 
@@ -111,49 +96,52 @@ fn parse_path(root: &str, path: &str) -> String {
     return path;
 }
 
-//  Reads the file and returns the contents
 fn read_file(root: &str, sessionid: &Uuid, path: &str) -> Option<String> {
     let path = parse_path(&root, &path);
 
-    log(LogLevel::Trace, &SERVERID.lock().unwrap(), sessionid, format!("Looking for file:{}", &path).as_str());
+    info!("{},Looking for file:{}", sessionid, &path);
 
     return std::fs::read_to_string(&path).ok();
 }
 
-//  Starts the web server and returns the root and listener
-fn start_web_server() -> (String, TcpListener, ThreadPool) {
+fn parse_arguments() -> Result<(String, String, u16, usize), String> {
     argparser::check_for_help_arg();
-    let root = argparser::get_root_arg();
-    let ip = argparser::get_ip_from_args();
-    let port = argparser::get_port_from_args();
-    let threadpoolsize = argparser::get_threadpoolsize_from_args();
 
-    if root.is_err() { throw_error(root.as_ref().err().unwrap().as_str()); }
-    if ip.is_err() { throw_error(ip.as_ref().err().unwrap().as_str()); }
-    if port.is_err() { throw_error(port.as_ref().err().unwrap().as_str()); }
-    if threadpoolsize.is_err() { throw_error(threadpoolsize.as_ref().err().unwrap().as_str()); }
+    let loglevel = argparser::get_loglevel_from_args().map_err(|e| e.to_string())?;
+    env_logger::builder().filter_level(loglevel).init();
 
-    let root = root.unwrap();
-    let ip = ip.unwrap();
-    let port = port.unwrap();
-    let threadpoolsize = threadpoolsize.unwrap();
+    let root = argparser::get_root_arg().map_err(|e| e.to_string())?;
+    let ip = argparser::get_ip_from_args().map_err(|e| e.to_string())?;
+    let port = argparser::get_port_from_args().map_err(|e| e.to_string())?;
+    let threadpoolsize = argparser::get_threadpoolsize_from_args().map_err(|e| e.to_string())?;
 
-    log(LogLevel::Info, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Started web server on ip:{} port:{} root:{}", &ip, &port, &root).as_str());
+    Ok((root, ip, port, threadpoolsize))
+}
+
+fn start_web_server() -> (String, TcpListener, ThreadPool) {
+    let (root, ip, port, threadpoolsize) = match parse_arguments() {
+        Ok(args) => args,
+        Err(e) => {
+            throw_fatal_error(&e);
+            std::process::exit(-1);
+        }
+    };
+
+    info!("{},Started web server on ip:{} port:{} root:{}", Uuid::nil(), &ip, &port, &root);
 
     let socketaddress = format!("{}:{}", &ip, &port);
-    let threadpool = ThreadPool::new(threadpoolsize, SERVERID.lock().unwrap().clone());
-    if threadpool.is_err() {
-        log(LogLevel::Error, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Error: {:?}", threadpool.err().unwrap()).as_str());
+    let threadpool = ThreadPool::new(threadpoolsize).unwrap_or_else(|e| {
+        error!("{},Error: {:?}", Uuid::nil(), e);
         std::process::exit(1);
-    }
+    });
 
-    return (root, TcpListener::bind(&socketaddress).unwrap(), threadpool.unwrap());
+    (root, TcpListener::bind(&socketaddress).unwrap(), threadpool)
 }
 
 //  Throws an error and exits the program
 //  Used for invalid arguments
-fn throw_error(e: &str) {
-    log(LogLevel::Error, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Error: {}", e).as_str());
+fn throw_fatal_error(e: &str) {
+    error!("{},Error: {}", Uuid::nil(), e);
     std::process::exit(-1);
 }
 
@@ -175,7 +163,7 @@ fn main() {
 
     for stream in listener.incoming() {
         if stream.is_err() {
-            log(LogLevel::Error, &SERVERID.lock().unwrap(), &Uuid::nil(), format!("Error: {}", stream.err().unwrap()).as_str());
+            error!("{},Error: {}", Uuid::nil(), stream.err().unwrap());
             continue;
         }
 

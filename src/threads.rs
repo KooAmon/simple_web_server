@@ -1,10 +1,8 @@
-use uuid::Uuid;
+use log::trace;
 use std::{
     sync::{mpsc, Arc, Mutex},
     thread,
 };
-
-use crate::logger::{log, LogLevel};
 
 #[derive(Debug)]
 pub enum PoolCreationError {
@@ -19,7 +17,7 @@ pub struct ThreadPool {
 }
 
 impl ThreadPool {
-    pub fn new(size: usize, serverid: Uuid) -> Result<ThreadPool, PoolCreationError> {
+    pub fn new(size: usize) -> Result<ThreadPool, PoolCreationError> {
 
         if size <= 0 { return Err(PoolCreationError::InvalidSize); }
 
@@ -29,7 +27,8 @@ impl ThreadPool {
 
 
         for id in 0..size {
-            workers.push(Worker::new(id, Arc::clone(&receiver), serverid));
+            trace!("Creating worker {}", id);
+            workers.push(Worker::new(id, Arc::clone(&receiver)));
         }
 
         return Ok(ThreadPool { workers, sender: Some(sender) });
@@ -47,7 +46,7 @@ impl Drop for ThreadPool {
         drop(self.sender.take());
 
         for worker in &mut self.workers {
-            log(LogLevel::Trace, &Uuid::nil(), &Uuid::nil(), format!("Shutting down worker {}", worker.id).as_str());
+            trace!("Shutting down worker {}", worker.id);
             if let Some(thread) = worker.thread.take() {
                 thread.join().unwrap();
             }
@@ -61,18 +60,19 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>, serverid: Uuid) -> Worker {
+    fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
+        trace!("Worker {} created", id);
         let thread = thread::spawn(move || loop {
             let message = receiver.lock().unwrap().recv();
 
             match message {
                 Ok(job) => {
-                    log(LogLevel::Trace, &serverid, &Uuid::nil(), format!("Worker {} got a job.", id).as_str());
+                    trace!("Worker {} got a job.", id);
                     job();
-                    log(LogLevel::Trace, &serverid, &Uuid::nil(), format!("Worker {} finished a job", id).as_str());
+                    trace!("Worker {} finished a job", id);
                 },
                 Err(_) => {
-                    log(LogLevel::Trace, &serverid, &Uuid::nil(), format!("Worker {} shutting down", id).as_str());
+                    trace!("Worker {} shutting down", id);
                     break;
 
                 }
